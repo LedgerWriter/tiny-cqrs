@@ -6,6 +6,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "tiny-cqrs": "dist/cli.js"
+  },
   "files": ["dist", "schema"],
   "exports": {
     ".": {
