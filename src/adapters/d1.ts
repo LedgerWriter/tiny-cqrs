@@ -1,11 +1,12 @@
 import type { D1Database, D1PreparedStatement } from '@cloudflare/workers-types';
 import { ConcurrencyConflictError } from '../errors.js';
-import type { StorageAdapter } from '../storage-adapter.js';
-import type { Event, StoredEvent } from '../types.js';
+import type { IdempotencyStore, StorageAdapter } from '../storage-adapter.js';
+import type { Event, Outcome, StoredEvent } from '../types.js';
 
 /**
- * Cloudflare D1 adapter. Requires the `event_store` table from schema/d1.sql (mirrors
- * ledgerwriter.com's original event_store schema — the `UNIQUE(tenant_id, aggregate_id, version)`
+ * Cloudflare D1 adapter. Requires the `event_store` table from schema/0001_event_store.sql
+ * (mirrors ledgerwriter.com's original event_store schema — the
+ * `UNIQUE(tenant_id, aggregate_id, version)`
  * index is the entire optimistic-concurrency mechanism: a conflicting append hits that constraint
  * and D1 reports it as an "UNIQUE constraint failed" error, which this adapter translates into
  * ConcurrencyConflictError so callers never see a raw SQL error message.
@@ -102,4 +103,40 @@ export function createD1Adapter(db: D1Database): StorageAdapter<D1PreparedStatem
 
 function isConcurrencyConflict(err: unknown): boolean {
   return err instanceof Error && /UNIQUE constraint failed/i.test(err.message);
+}
+
+/**
+ * Cloudflare D1-backed IdempotencyStore. Requires the `idempotency_keys` table from
+ * schema/0002_idempotency_keys.sql.
+ *
+ * Known limitation: this is check-then-act, not claim-then-act. It correctly de-duplicates the
+ * case executeCommand's idempotency support exists for — a client retrying after a timeout, once
+ * the first attempt has already finished — because by the time the retry's `get()` runs, `set()`
+ * from the first attempt has already completed. It does NOT fully de-duplicate two requests with
+ * the same key that race genuinely concurrently: both can see no cached outcome and both proceed
+ * to run the command, and only one is guaranteed to win (the other likely hits a real
+ * ConcurrencyConflictError from appendEvents, not a clean idempotent replay). A true claim step
+ * (an upfront unique-constrained "reservation" row, checked and inserted atomically before the
+ * command runs) would close that gap; not implemented here.
+ */
+export function createD1IdempotencyStore(db: D1Database): IdempotencyStore {
+  return {
+    async get<T>(tenantId: string, key: string): Promise<Outcome<T> | undefined> {
+      const row = await db
+        .prepare('SELECT outcome FROM idempotency_keys WHERE tenant_id = ? AND idempotency_key = ?')
+        .bind(tenantId, key)
+        .first<{ outcome: string }>();
+      return row ? (JSON.parse(row.outcome) as Outcome<T>) : undefined;
+    },
+
+    async set<T>(tenantId: string, key: string, outcome: Outcome<T>): Promise<void> {
+      await db
+        .prepare(
+          `INSERT INTO idempotency_keys (tenant_id, idempotency_key, outcome) VALUES (?, ?, ?)
+           ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
+        )
+        .bind(tenantId, key, JSON.stringify(outcome))
+        .run();
+    },
+  };
 }

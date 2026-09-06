@@ -47,7 +47,11 @@ const result = await executeCommand({
 ```
 
 Swap `createMemoryAdapter()` for `createD1Adapter(env.DB)` (`tiny-cqrs/adapters/d1`, schema in
-`schema/d1.sql`) to run the exact same domain code against Cloudflare D1 — nothing else changes.
+`schema/0001_event_store.sql`) to run the exact same domain code against Cloudflare D1 — nothing
+else changes.
+
+For idempotent retries, also pass `idempotency: createD1IdempotencyStore(env.DB)` (same module,
+schema in `schema/0002_idempotency_keys.sql`) and an `idempotencyKey` per call — see `Design` below.
 
 ## Design
 
@@ -62,7 +66,20 @@ Swap `createMemoryAdapter()` for `createD1Adapter(env.DB)` (`tiny-cqrs/adapters/
   `idempotencyKey` + an `IdempotencyStore`, a retried call with the same key returns the original
   outcome *without* re-running `decide` or touching the store — this is what makes a retry after a
   network timeout safe instead of surfacing a spurious `CONCURRENCY_CONFLICT` for a command that
-  already succeeded.
+  already succeeded. Both shipped adapters have a matching `IdempotencyStore`
+  (`createMemoryIdempotencyStore`, `createD1IdempotencyStore`). **Known limitation**: these are
+  check-then-act, not claim-then-act — they correctly de-duplicate a client retrying after the
+  first attempt has already finished, but two requests with the same key that race genuinely
+  concurrently aren't fully de-duplicated (the loser typically hits a real
+  `ConcurrencyConflictError` rather than a clean idempotent replay). A true claim step would close
+  that gap; not implemented yet.
+- **A command that creates a new aggregate** (a random ID minted before the command runs) needs
+  the idempotency check *before* that ID is generated, not just delegated to `executeCommand` —
+  otherwise a retry mints a new ID every time and idempotency never actually applies. Check the
+  store yourself first (`idempotency.get(tenantId, key)`) and only generate a new ID if it misses;
+  still pass the same `idempotencyKey`/`idempotency` into `executeCommand` so the success outcome
+  gets cached. `executeCommand` can't do this for you — it only sees the aggregate ID *after*
+  you've already chosen it.
 - **`Outcome<T>`**: `{ok:true,data}|{ok:false,code,message}` — a minimal Either, not fp-ts. No
   transport type (no HTTP status code) anywhere in the library; map `Outcome` to your framework's
   response type in your own app.

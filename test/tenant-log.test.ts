@@ -23,6 +23,6 @@ describe('loadTenantLog', () => {
     expect(first).toHaveLength(1);
 
     const rest = await store.loadTenantLog?.('t1', { after: first?.[0]?.sequence });
-    expect(rest?.map((e) => (e.event as { amount: number }).amount)).toEqual([2, 3]);
+    expect(rest?.map((e) => (e.event as unknown as { amount: number }).amount)).toEqual([2, 3]);
   });
 });
