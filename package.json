@@ -1,21 +1,36 @@
 {
   "name": "tiny-cqrs",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A tiny, storage-agnostic CQRS/event-sourcing core. Bring your own database, your own domain types, your own deployment target.",
   "license": "Apache-2.0",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "schema"],
   "exports": {
-    ".": "./src/index.ts",
-    "./adapters/memory": "./src/adapters/memory.ts",
-    "./adapters/d1": "./src/adapters/d1.ts",
-    "./signing": "./src/signing.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./adapters/memory": {
+      "types": "./dist/adapters/memory.d.ts",
+      "default": "./dist/adapters/memory.js"
+    },
+    "./adapters/d1": {
+      "types": "./dist/adapters/d1.d.ts",
+      "default": "./dist/adapters/d1.js"
+    },
+    "./signing": {
+      "types": "./dist/signing.d.ts",
+      "default": "./dist/signing.js"
+    }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "bun run typecheck && bun run test && bun run build"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.8.19",
