@@ -21,7 +21,7 @@ just ordinary packages that happen to depend on `tiny-cqrs`. There's nothing her
 packages to compose with each other, and that's fine — a ledger and, say, a construction project
 are different aggregates with nothing to share.
 
-**Status:** pre-1.0 (currently v0.3.0). The core shape (`executeCommand`, `StorageAdapter`,
+**Status:** pre-1.0 (currently v0.4.0). The core shape (`executeCommand`, `StorageAdapter`,
 `Outcome`) is stable; expect additions rather than breaking changes, but semver 0.x means they're
 still possible.
 
