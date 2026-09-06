@@ -30,6 +30,13 @@ export interface ExecuteCommandResult<E extends Event, S> {
  * store at all — decide/append never re-run, so a client retry after a network timeout gets back
  * the original outcome instead of a spurious CONCURRENCY_CONFLICT (the aggregate's version has
  * already moved on from the first, successful attempt).
+ *
+ * Deliberately monadic: Outcome<T> is a minimal Either, and this body is a bind/Kleisli chain —
+ * idempotency check -> load -> decide -> append, each step either producing a value the next one
+ * consumes or short-circuiting into a failure Outcome (an early `return` on an idempotency hit, a
+ * caught DomainError, or a caught ConcurrencyConflictError — three different failure sources, one
+ * Outcome shape). Written as plain sequential try/catch rather than an actual chain-calling API on
+ * purpose — see the README's "Design" section for why.
  */
 export async function executeCommand<S, E extends Event, C, Stmt = unknown>(
   opts: ExecuteCommandOptions<S, E, C, Stmt>,

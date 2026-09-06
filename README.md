@@ -84,9 +84,13 @@ schema in `schema/0002_idempotency_keys.sql`) and an `idempotencyKey` per call �
   still pass the same `idempotencyKey`/`idempotency` into `executeCommand` so the success outcome
   gets cached. `executeCommand` can't do this for you — it only sees the aggregate ID *after*
   you've already chosen it.
-- **`Outcome<T>`**: `{ok:true,data}|{ok:false,code,message}` — a minimal Either, not fp-ts. No
-  transport type (no HTTP status code) anywhere in the library; map `Outcome` to your framework's
-  response type in your own app.
+- **`executeCommand` is deliberately monadic.** `Outcome<T>` (`{ok:true,data}|{ok:false,code,message}`)
+  is a minimal Either, and `executeCommand`'s body is a bind/Kleisli chain: idempotency check →
+  load → decide → append, where each step either hands a value to the next or returns an `Outcome`
+  that short-circuits the rest — the same shape as `Either.chain`/`flatMap`. It's written as plain
+  sequential TypeScript rather than an actual `chain`-calling API on purpose: requiring fp-ts
+  fluency to use this library would cut against "simple enough to embed locally." No transport type
+  (no HTTP status code) anywhere in `Outcome`; map it to your framework's response type yourself.
 - **Signing** (`tiny-cqrs/signing`, optional): Ed25519 sign/verify over any payload, for anyone who
   wants tamper-evident events. Not wired into `executeCommand` — sign what you choose to sign.
 
