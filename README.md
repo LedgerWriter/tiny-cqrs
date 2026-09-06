@@ -9,9 +9,13 @@ apply → append(+project) cycle around them, with optimistic concurrency and op
 built in.
 
 This is the generic core. If you're building an accounting/finance-shaped ledger, see
-[`ledger-kit`](../ledger-kit), the first "flavor" package built on top of this one — a flavor is
-just an ordinary package that imports `tiny-cqrs` and exports domain helpers; there's no plugin API
-to implement.
+[`ledger-kit`](https://github.com/mnhpub/ledger-kit), the first "flavor" package built on top of
+this one — a flavor is just an ordinary package that imports `tiny-cqrs` and exports domain
+helpers; there's no plugin API to implement.
+
+**Status:** pre-1.0 (currently v0.2.0). The core shape (`executeCommand`, `StorageAdapter`,
+`Outcome`) is stable; expect additions rather than breaking changes, but semver 0.x means they're
+still possible.
 
 ## Install
 
@@ -91,6 +95,12 @@ schema in `schema/0002_idempotency_keys.sql`) and an `idempotencyKey` per call �
 Documented rather than silently missing: event schema upcasting/migration, snapshotting, async or
 queued projections. If you need these today, layer them on top — the adapter and `executeCommand`
 interfaces don't preclude it, they just don't provide it yet.
+
+## Contributing
+
+Bug reports, new storage adapters, and documentation fixes are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to get set up and what's in vs. out of scope for this
+repo specifically.
 
 ## License
 
