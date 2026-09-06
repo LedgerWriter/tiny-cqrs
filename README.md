@@ -21,9 +21,100 @@ just ordinary packages that happen to depend on `tiny-cqrs`. There's nothing her
 packages to compose with each other, and that's fine — a ledger and, say, a construction project
 are different aggregates with nothing to share.
 
-**Status:** pre-1.0 (currently v0.2.0). The core shape (`executeCommand`, `StorageAdapter`,
+**Status:** pre-1.0 (currently v0.3.0). The core shape (`executeCommand`, `StorageAdapter`,
 `Outcome`) is stable; expect additions rather than breaking changes, but semver 0.x means they're
 still possible.
+
+## Why this exists
+
+CQRS and event sourcing become expensive when a small consistency loop is repeated across every
+command handler and then surrounded by a framework: command buses, handler registries, transport
+types, plugin systems, message envelopes, projection runners, retry libraries, and database-specific
+code.
+
+`tiny-cqrs` extracts the repeated mechanics without turning them into a platform. The business
+model remains two plain functions:
+
+```text
+fold(events)           -> state
+decide(state, command) -> new events
+```
+
+The core owns only the invariants it can actually guarantee: aggregate version checks, tenant and
+aggregate scoping, domain-error boundaries, atomic projection writes supplied by the adapter, and
+optional replay of a completed request by idempotency key. The application still owns its domain
+language, transport, deployment, projections, and external integrations.
+
+That is the project's central engineering claim:
+
+> A complex architectural problem becomes easier to keep correct when the irreducible consistency
+> loop is explicit and optional concerns are kept outside it.
+
+This is not a claim that event sourcing solves distributed systems. Snapshotting, event evolution,
+durable subscriber delivery, and cache policy remain real problems. It is a claim that they should
+not be prerequisites for a small aggregate decision model.
+
+## Code size is an architectural benefit
+
+The small code surface is not just a nice number. It reduces the number of assumptions an application
+must inherit and the number of places where correctness can diverge:
+
+- **Less runtime surface:** zero required runtime dependencies means fewer transitive packages,
+  fewer reachable platform imports, and less code to bundle, audit, patch, and load.
+- **Smaller deployment units:** edge platforms charge and constrain startup, transfer, memory, and
+  CPU. A storage-agnostic core can be included without pulling in a database client, message broker,
+  HTTP framework, or Node-only compatibility layer.
+- **Fewer ambient assumptions:** the core does not require a process-wide container, event loop
+  service, global configuration registry, or framework lifecycle. This makes its behavior easier to
+  reason about in short-lived isolates and constrained runtimes.
+- **A smaller review surface:** the important guarantees are concentrated in `executeCommand`, the
+  storage contract, and the event envelope. A reviewer can inspect the consistency path instead of
+  reconstructing it from a network of conventions and extension points.
+- **Lower duplication:** every command uses the same tested load → fold → decide → append path,
+  while domain code stays local to the aggregate that owns the rule.
+
+The goal is not minimum lines at any cost. The goal is minimum mechanism consistent with explicit
+correctness guarantees. Removing a feature from the core is good engineering when it removes an
+assumption that the core cannot reliably enforce.
+
+## Edge and IoT fit
+
+The same boundaries make the project useful across environments with very different constraints.
+
+For edge applications, TypeScript and Cloudflare D1 are first-class targets: the domain functions
+are pure, the core has no transport coupling, and the adapter supplies the platform-specific atomic
+append. The in-memory adapter provides a zero-dependency local model, while the D1 adapter uses the
+same domain code in a Worker. A command does not need a long-lived process or a central application
+server to reconstruct an aggregate, enforce its invariant, and append a versioned event.
+
+For IoT and embedded systems, the important benefit is the portable contract rather than assuming
+that every device runs this npm package directly. A device can emit a compact command or event
+record to an edge gateway, and the gateway can use the same `fold`/`decide` model to validate and
+record it. A native or Zig implementation can implement the same contract for devices that need
+smaller binaries, predictable memory, or a C-compatible interface; the TypeScript implementation
+remains the natural choice at the edge boundary.
+
+This supports a layered topology without changing the domain model:
+
+```text
+device or local controller
+  -> command/event record
+edge gateway or Worker
+  -> fold, decide, version check, append
+durable store
+  -> optional projections and subscribers
+```
+
+Intermittent connectivity makes explicit idempotency especially valuable. A device or gateway can
+retry a command after a timeout using the same key, while the aggregate version check protects
+against a genuinely different command racing with it. The current idempotency store is intentionally
+documented as check-then-act; deployments that need concurrent duplicate claiming can add that
+stronger operation at the storage boundary.
+
+The architectural principle is the same at every tier: keep the domain decision portable, keep
+platform concerns in adapters, and make delivery or caching optional layers. That is how a small
+implementation extends quality architecture principles rather than merely shrinking an existing
+framework.
 
 ## Install
 
