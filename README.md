@@ -9,7 +9,7 @@ apply → append(+project) cycle around them, with optimistic concurrency and op
 built in.
 
 This is the generic core. If you're building an accounting/finance-shaped ledger, see
-[`ledger-kit`](https://github.com/mnhpub/ledger-kit), the first "flavor" package built on top of
+[`ledger-kit`](https://github.com/LedgerWriter/ledger-kit), the first "flavor" package built on top of
 this one — a flavor is just an ordinary package that imports `tiny-cqrs` and exports domain
 helpers; there's no plugin API to implement.
 
