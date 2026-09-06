@@ -1,6 +1,6 @@
 {
   "name": "tiny-cqrs",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A tiny, storage-agnostic CQRS/event-sourcing core. Bring your own database, your own domain types, your own deployment target.",
   "license": "Apache-2.0",
   "type": "module",

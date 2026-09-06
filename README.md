@@ -13,6 +13,14 @@ This is the generic core. If you're building an accounting/finance-shaped ledger
 this one — a flavor is just an ordinary package that imports `tiny-cqrs` and exports domain
 helpers; there's no plugin API to implement.
 
+Building your own flavor package? The informal convention is a `*-kit` suffix (`ledger-kit` sets
+the precedent) purely so people can find it — that's a naming convention for discoverability, not
+a plugin contract. Unlike, say, unified.js's plugins (which interoperate because every one conforms
+to a shared transformer signature over a shared AST), flavor packages share no such contract: they're
+just ordinary packages that happen to depend on `tiny-cqrs`. There's nothing here for two flavor
+packages to compose with each other, and that's fine — a ledger and, say, a construction project
+are different aggregates with nothing to share.
+
 **Status:** pre-1.0 (currently v0.2.0). The core shape (`executeCommand`, `StorageAdapter`,
 `Outcome`) is stable; expect additions rather than breaking changes, but semver 0.x means they're
 still possible.
@@ -99,6 +107,12 @@ schema in `schema/0002_idempotency_keys.sql`) and an `idempotencyKey` per call �
 Documented rather than silently missing: event schema upcasting/migration, snapshotting, async or
 queued projections. If you need these today, layer them on top — the adapter and `executeCommand`
 interfaces don't preclude it, they just don't provide it yet.
+
+## Design decisions
+
+Why this exists instead of extending [Atomik CQRS](https://github.com/mnhpub/antiatomik-cqrs)
+(this project's own predecessor) or adopting an existing TypeScript library, with the actual
+numbers behind that call: [docs/adr/decisions.md](docs/adr/decisions.md).
 
 ## Contributing
 

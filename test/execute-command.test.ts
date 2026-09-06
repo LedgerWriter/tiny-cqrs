@@ -82,6 +82,44 @@ describe('executeCommand', () => {
     expect(results.filter((r) => !r.ok)).toEqual([{ ok: false, code: 'CONCURRENCY_CONFLICT', message: expect.any(String) }]);
   });
 
+  it('retryOnConflict reloads fresh state and re-runs decide when a real race occurs, instead of surfacing CONCURRENCY_CONFLICT', async () => {
+    const store = createMemoryAdapter();
+    const decideSpy = vi.fn(decide);
+
+    const run = () =>
+      executeCommand({
+        store, fold, decide: decideSpy,
+        retryOnConflict: 3,
+        tenantId: 't1', aggregateType: 'Counter', aggregateId: 'c1',
+        command: { amount: 1 },
+      });
+
+    // Same race as the test above, but both callers now recover from it automatically.
+    const [a, b] = await Promise.all([run(), run()]);
+
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    // The loser's decide ran more than once against progressively fresher state -- proves this
+    // is a genuine reload-and-redecide, not a blind append retry.
+    expect(decideSpy.mock.calls.length).toBeGreaterThan(2);
+
+    const finalValues = [a, b]
+      .map((r) => (r.ok ? r.data.state.value : null))
+      .sort((x, y) => (x ?? 0) - (y ?? 0));
+    expect(finalValues).toEqual([1, 2]); // one landed first, the other retried on top of it
+  });
+
+  it('retryOnConflict still surfaces CONCURRENCY_CONFLICT once attempts are exhausted (default: no retry)', async () => {
+    const store = createMemoryAdapter();
+    const run = () =>
+      executeCommand({ store, fold, decide, tenantId: 't1', aggregateType: 'Counter', aggregateId: 'c1', command: { amount: 1 } });
+
+    const [a, b] = await Promise.all([run(), run()]);
+    const results = [a, b];
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.filter((r) => !r.ok)).toEqual([{ ok: false, code: 'CONCURRENCY_CONFLICT', message: expect.any(String) }]);
+  });
+
   it('a retried call with the same idempotencyKey short-circuits before decide/append run again — fixes the false-409-on-retry bug', async () => {
     const store = createMemoryAdapter();
     const idempotency = createMemoryIdempotencyStore();
