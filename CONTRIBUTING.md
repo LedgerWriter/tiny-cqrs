@@ -32,12 +32,12 @@ automatically.
 
 New adapters, bug fixes, and documentation improvements are welcome here. Domain-specific helpers
 (accounting, construction, whatever) belong in their own "flavor" package that depends on
-`tiny-cqrs` — see [`ledger-kit`](https://github.com/mnhpub/ledger-kit) for the reference example —
+`tiny-cqrs` — see [`ledger-kit`](https://github.com/LedgerWriter/ledger-kit) for the reference example —
 not in this repo.
 
 ## Reporting a security issue
 
-Please use [GitHub's private vulnerability reporting](https://github.com/mnhpub/tiny-cqrs/security/advisories/new)
+Please use [GitHub's private vulnerability reporting](https://github.com/LedgerWriter/tiny-cqrs/security/advisories/new)
 rather than a public issue.
 
 ## License
