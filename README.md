@@ -1,6 +1,8 @@
 # tiny-cqrs
 
-A tiny, storage-agnostic CQRS / event-sourcing core for TypeScript. Bring your own database, your
+A tiny, storage-agnostic CQRS / event-sourcing core for TypeScript — a portability harness for
+aggregate-local domain logic, so the same `fold`/`decide` functions run unmodified across
+Cloudflare Durable Objects, D1, Node, and other storage substrates. Bring your own database, your
 own domain types, your own deployment target.
 
 No transport dependency (no HTTP framework coupling), no fp-ts, no plugin system to learn. `decide`
@@ -24,6 +26,40 @@ are different aggregates with nothing to share.
 **Status:** pre-1.0 (currently v0.4.0). The core shape (`executeCommand`, `StorageAdapter`,
 `Outcome`) is stable; expect additions rather than breaking changes, but semver 0.x means they're
 still possible.
+
+## Possibly useful / likely not
+
+**Possibly useful when:**
+
+- You want the same aggregate decision logic (`fold`/`decide`) to run unmodified across Cloudflare
+  Durable Objects, D1, Node, and an in-memory store — locally in tests, then deployed to the edge,
+  without a rewrite when the storage substrate changes.
+- Your unit of consistency is a single aggregate identity (an order, a device, a ledger entry) and
+  you want an explicit, reviewable version-check-and-append loop instead of assembling one from a
+  database client by hand each time.
+- You're deploying to a constrained runtime (a Cloudflare Worker, a resource-limited edge/IoT
+  gateway) where a zero-runtime-dependency core, small bundle, and no framework lifecycle matter
+  more than a batteries-included stack.
+- You want idempotent retries (a client or gateway retrying after a timeout) without hand-rolling
+  that check yourself.
+
+**Likely not useful when:**
+
+- You'll only ever run against one storage backend, forever — the portability this buys costs some
+  indirection you don't need. Wiring your database client directly, or using a raw Durable Object,
+  is simpler and has less overhead; see [What the edge changes](#what-the-edge-changes) — this
+  project makes no raw-performance claim over that.
+- You need cross-aggregate transactions or saga/choreography orchestration — the consistency
+  guarantee here is scoped to one aggregate at a time; nothing coordinates multiple aggregates in a
+  single unit of work.
+- You need snapshotting, event schema upcasting/migration, or async/queued projections today —
+  these are explicit [non-goals](#non-goals-v1) for v1; you'd have to build them on top.
+- You need concurrent-duplicate-safe idempotency (two identical requests racing at the same instant,
+  not a retry after a timeout) — the current stores are check-then-act, not claim-then-act (see
+  [Design](#design)); the losing request typically hits a real conflict rather than a clean
+  idempotent replay.
+- You want a full application framework (command bus, handler registry, transport/message
+  envelopes) — that's deliberately absent; you supply the transport and wire this in yourself.
 
 ## Why this exists
 
@@ -115,6 +151,34 @@ The architectural principle is the same at every tier: keep the domain decision 
 platform concerns in adapters, and make delivery or caching optional layers. That is how a small
 implementation extends quality architecture principles rather than merely shrinking an existing
 framework.
+
+### What the edge changes
+
+`tiny-cqrs` is not a new CQRS primitive. CQRS, event sourcing, aggregate-local consistency,
+optimistic concurrency, and idempotency are established techniques. The edge-oriented value is
+the execution contract that lets the same pure domain logic run against different substrates,
+including Cloudflare Durable Objects and D1.
+
+For an aggregate-local command, a Durable Object can keep the aggregate's hot state in memory and
+serialize commands for that identity. This can avoid a public network hop to a regional application
+server, avoid a database read before every decision, and partition contention by aggregate ID. The
+client still may have to travel to the Durable Object's location; edge ingress does not mean that
+state is replicated in every PoP, and this project makes no latency or throughput claim without
+deployed measurements.
+
+Raw Durable Objects are therefore the smallest and most direct choice when one aggregate identity
+is the whole problem. `tiny-cqrs` adds code and some execution overhead in exchange for a shared
+command/event/storage contract, local development, D1 support, reusable optimistic concurrency,
+and explicit completed-retry behavior. Its value is portability and consistency across substrates,
+not a demonstrated raw-Durable-Object performance win.
+
+For production decisions, measure warm and cold object latency, hydration and replay cost, storage
+write latency, throughput per aggregate, contention, and idempotency-hit latency. Use a deployed
+staging test for Cloudflare claims; local Workers emulation is behavioral evidence, not production
+network evidence.
+
+The comparative experiment and its evidence are recorded in
+[`exp/docs/experiment.md`](exp/docs/experiment.md).
 
 ## Install
 

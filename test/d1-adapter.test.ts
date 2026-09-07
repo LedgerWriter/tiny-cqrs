@@ -48,6 +48,25 @@ describe('createD1Adapter', () => {
     ).rejects.toThrow('optimistic concurrency conflict');
   });
 
+  it("pins D1's raw UNIQUE-violation error string — if this ever fails, D1's wording changed and isConcurrencyConflict's regex in src/adapters/d1.ts needs updating before conflicts silently stop being recognized", async () => {
+    const store = createD1Adapter(env.DB);
+    await store.appendEvents('t1', 'Counter', 'c1', 0, [{ type: 'Incremented', amount: 1 }]);
+
+    let raw: unknown;
+    try {
+      await env.DB.batch([
+        env.DB.prepare(
+          'INSERT INTO event_store (tenant_id, aggregate_type, aggregate_id, version, event_type, payload) VALUES (?, ?, ?, ?, ?, ?)',
+        ).bind('t1', 'Counter', 'c1', 1, 'Incremented', '{}'),
+      ]);
+    } catch (err) {
+      raw = err;
+    }
+
+    expect(raw).toBeInstanceOf(Error);
+    expect((raw as Error).message).toMatch(/UNIQUE constraint failed/i);
+  });
+
   it('loadTenantLog returns a chronological, cross-aggregate view scoped to one tenant', async () => {
     const store = createD1Adapter(env.DB);
     await store.appendEvents('t1', 'Counter', 'a', 0, [{ type: 'Incremented', amount: 1 }]);
