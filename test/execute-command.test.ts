@@ -146,6 +146,32 @@ describe('executeCommand', () => {
     expect(decideSpy).toHaveBeenCalledTimes(1); // not called again
   });
 
+  it('retryOnConflict + idempotencyKey together do not double-post on a genuine race', async () => {
+    const store = createMemoryAdapter();
+    const idempotency = createMemoryIdempotencyStore();
+    const decideSpy = vi.fn(decide);
+
+    const run = () =>
+      executeCommand({
+        store, idempotency, fold, decide: decideSpy,
+        retryOnConflict: 3,
+        idempotencyKey: 'req-race',
+        tenantId: 't1', aggregateType: 'Counter', aggregateId: 'c1',
+        command: { amount: 1 },
+      });
+
+    // Two callers share the same idempotencyKey and race genuinely concurrently — both miss the
+    // idempotency cache before either has appended. Without re-checking idempotency on each
+    // retry attempt, the loser would reload state after its ConcurrencyConflictError and blindly
+    // re-run decide on the same command, appending a second time.
+    const [a, b] = await Promise.all([run(), run()]);
+
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(a).toEqual(b); // both callers got back the exact same outcome — one append happened
+    await expect(store.loadEvents('t1', 'Counter', 'c1')).resolves.toHaveLength(1); // not 2
+  });
+
   it('a different idempotencyKey is not deduped — decide runs normally', async () => {
     const store = createMemoryAdapter();
     const idempotency = createMemoryIdempotencyStore();

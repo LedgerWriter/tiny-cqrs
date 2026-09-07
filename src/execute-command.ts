@@ -45,8 +45,14 @@ export interface ExecuteCommandResult<E extends Event, S> {
  * to the given number of attempts, before surfacing CONCURRENCY_CONFLICT. This is a different
  * problem than idempotencyKey solves: idempotencyKey answers "the same request came back",
  * retryOnConflict answers "two different requests collided, and re-running is safe because decide
- * is pure." The two compose: idempotency is checked once up front; retry applies to each fresh
- * attempt underneath it.
+ * is pure." The two compose, and the idempotency check runs on *every* attempt, not just the
+ * first: if two calls share the same idempotencyKey and race genuinely concurrently, both can
+ * miss the cache before either has appended. Without re-checking per attempt, the loser of that
+ * race would reload state after a ConcurrencyConflictError and blindly re-run decide on the same
+ * command — decide has no way to know this is a duplicate — and append a second time. Re-checking
+ * idempotency at the top of each attempt means that by the time the loser retries, the winner's
+ * `set()` has (almost certainly) already landed, so the loser returns the cached outcome instead
+ * of re-deciding and double-appending.
  *
  * Deliberately monadic: Outcome<T> is a minimal Either, and this body is a bind/Kleisli chain —
  * idempotency check -> load -> decide -> append, each step either producing a value the next one
@@ -58,16 +64,16 @@ export interface ExecuteCommandResult<E extends Event, S> {
 export async function executeCommand<S, E extends Event, C, Stmt = unknown>(
   opts: ExecuteCommandOptions<S, E, C, Stmt>,
 ): Promise<Outcome<ExecuteCommandResult<E, S>>> {
-  if (opts.idempotencyKey && opts.idempotency) {
-    const prior = await opts.idempotency.get<ExecuteCommandResult<E, S>>(opts.tenantId, opts.idempotencyKey);
-    if (prior) return prior;
-  }
-
   const maxAttempts = Math.max(1, opts.retryOnConflict ?? 1);
   let attempt = 0;
 
   while (true) {
     attempt++;
+
+    if (opts.idempotencyKey && opts.idempotency) {
+      const prior = await opts.idempotency.get<ExecuteCommandResult<E, S>>(opts.tenantId, opts.idempotencyKey);
+      if (prior) return prior;
+    }
 
     const history = await opts.store.loadEvents<E>(opts.tenantId, opts.aggregateType, opts.aggregateId);
     const priorState = opts.fold(history.map((h) => h.event));
