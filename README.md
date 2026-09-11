@@ -1,279 +1,504 @@
 # tiny-cqrs
 
-A tiny, storage-agnostic CQRS / event-sourcing core for TypeScript — a portability harness for
-aggregate-local domain logic, so the same `fold`/`decide` functions run unmodified across
-Cloudflare Durable Objects, D1, Node, and other storage substrates. Bring your own database, your
-own domain types, your own deployment target.
+A small, storage-agnostic CQRS and event-sourcing core for TypeScript.
 
-No transport dependency (no HTTP framework coupling), no fp-ts, no plugin system to learn. `decide`
-and `fold` are plain pure functions you write; `executeCommand` runs the load → fold → decide →
-apply → append(+project) cycle around them, with optimistic concurrency and opt-in idempotency
-built in.
+`tiny-cqrs` provides the aggregate execution cycle:
 
-This is the generic core. If you're building an accounting/finance-shaped ledger, see
-[`ledger-kit`](https://github.com/LedgerWriter/ledger-kit), the first "flavor" package built on top of
-this one — a flavor is just an ordinary package that imports `tiny-cqrs` and exports domain
-helpers; there's no plugin API to implement.
+```text
+load → fold → decide → apply → append
+```
 
-Building your own flavor package? The informal convention is a `*-kit` suffix (`ledger-kit` sets
-the precedent) purely so people can find it — that's a naming convention for discoverability, not
-a plugin contract. Unlike, say, unified.js's plugins (which interoperate because every one conforms
-to a shared transformer signature over a shared AST), flavor packages share no such contract: they're
-just ordinary packages that happen to depend on `tiny-cqrs`. There's nothing here for two flavor
-packages to compose with each other, and that's fine — a ledger and, say, a construction project
-are different aggregates with nothing to share.
+The core supplies the mechanics around that cycle. Your application supplies the domain types, state transition functions, storage adapter, and deployment target.
 
-**Status:** pre-1.0 (currently v0.4.0). The core shape (`executeCommand`, `StorageAdapter`,
-`Outcome`) is stable; expect additions rather than breaking changes, but semver 0.x means they're
-still possible.
-
-## Possibly useful / likely not
-
-**Possibly useful when:**
-
-- You want the same aggregate decision logic (`fold`/`decide`) to run unmodified across Cloudflare
-  Durable Objects, D1, Node, and an in-memory store — locally in tests, then deployed to the edge,
-  without a rewrite when the storage substrate changes.
-- Your unit of consistency is a single aggregate identity (an order, a device, a ledger entry) and
-  you want an explicit, reviewable version-check-and-append loop instead of assembling one from a
-  database client by hand each time.
-- You're deploying to a constrained runtime (a Cloudflare Worker, a resource-limited edge/IoT
-  gateway) where a zero-runtime-dependency core, small bundle, and no framework lifecycle matter
-  more than a batteries-included stack.
-- You want idempotent retries (a client or gateway retrying after a timeout) without hand-rolling
-  that check yourself.
-
-**Likely not useful when:**
-
-- You'll only ever run against one storage backend, forever — the portability this buys costs some
-  indirection you don't need. Wiring your database client directly, or using a raw Durable Object,
-  is simpler and has less overhead; see [What the edge changes](#what-the-edge-changes) — this
-  project makes no raw-performance claim over that.
-- You need cross-aggregate transactions or saga/choreography orchestration — the consistency
-  guarantee here is scoped to one aggregate at a time; nothing coordinates multiple aggregates in a
-  single unit of work.
-- You need snapshotting, event schema upcasting/migration, or async/queued projections today —
-  these are explicit [non-goals](#non-goals-v1) for v1; you'd have to build them on top.
-- You need concurrent-duplicate-safe idempotency (two identical requests racing at the same instant,
-  not a retry after a timeout) — the current stores are check-then-act, not claim-then-act (see
-  [Design](#design)); the losing request typically hits a real conflict rather than a clean
-  idempotent replay.
-- You want a full application framework (command bus, handler registry, transport/message
-  envelopes) — that's deliberately absent; you supply the transport and wire this in yourself.
+The same `fold` and `decide` functions can run against Cloudflare Durable Objects, D1, Node, an in-memory store, or another storage substrate supported by an adapter.
 
 ## Why this exists
 
-CQRS and event sourcing become expensive when a small consistency loop is repeated across every
-command handler and then surrounded by a framework: command buses, handler registries, transport
-types, plugin systems, message envelopes, projection runners, retry libraries, and database-specific
-code.
+CQRS and event sourcing are useful when the history of an aggregate matters and domain decisions need to be made against a known version of that history.
 
-`tiny-cqrs` extracts the repeated mechanics without turning them into a platform. The business
-model remains two plain functions:
+The consistency loop is small:
 
 ```text
-fold(events)           -> state
-decide(state, command) -> new events
+events
+  ↓
+fold
+  ↓
+state
+  ↓
+decide
+  ↓
+new events
+  ↓
+append
 ```
 
-The core owns only the invariants it can actually guarantee: aggregate version checks, tenant and
-aggregate scoping, domain-error boundaries, atomic projection writes supplied by the adapter, and
-optional replay of a completed request by idempotency key. The application still owns its domain
-language, transport, deployment, projections, and external integrations.
+Applications often implement this loop themselves. `tiny-cqrs` provides a small core for running it without requiring a command bus, HTTP framework, database, deployment platform, or application framework.
 
-That is the project's central engineering claim:
+The goal is not to provide a complete CQRS platform.
 
-> A complex architectural problem becomes easier to keep correct when the irreducible consistency
-> loop is explicit and optional concerns are kept outside it.
+The goal is to provide a small execution core that can be inspected, tested, adapted, and used by other packages.
 
-This is not a claim that event sourcing solves distributed systems. Snapshotting, event evolution,
-durable subscriber delivery, and cache policy remain real problems. It is a claim that they should
-not be prerequisites for a small aggregate decision model.
+---
 
-## Code size is an architectural benefit
+## Execution cycle
 
-The small code surface is not just a nice number. It reduces the number of assumptions an application
-must inherit and the number of places where correctness can diverge:
+`executeCommand` performs the core command cycle:
 
-- **Less runtime surface:** zero required runtime dependencies means fewer transitive packages,
-  fewer reachable platform imports, and less code to bundle, audit, patch, and load.
-- **Smaller deployment units:** edge platforms charge and constrain startup, transfer, memory, and
-  CPU. A storage-agnostic core can be included without pulling in a database client, message broker,
-  HTTP framework, or Node-only compatibility layer.
-- **Fewer ambient assumptions:** the core does not require a process-wide container, event loop
-  service, global configuration registry, or framework lifecycle. This makes its behavior easier to
-  reason about in short-lived isolates and constrained runtimes.
-- **A smaller review surface:** the important guarantees are concentrated in `executeCommand`, the
-  storage contract, and the event envelope. A reviewer can inspect the consistency path instead of
-  reconstructing it from a network of conventions and extension points.
-- **Lower duplication:** every command uses the same tested load → fold → decide → append path,
-  while domain code stays local to the aggregate that owns the rule.
+1. Load the aggregate's event history.
+2. Fold the events into current state.
+3. Pass the state and command to `decide`.
+4. Apply the resulting events to produce the next state.
+5. Append the events using optimistic concurrency.
+6. Optionally perform projection work supplied by the storage adapter.
+7. Return a structured outcome.
 
-The goal is not minimum lines at any cost. The goal is minimum mechanism consistent with explicit
-correctness guarantees. Removing a feature from the core is good engineering when it removes an
-assumption that the core cannot reliably enforce.
-
-## Edge and IoT fit
-
-The same boundaries make the project useful across environments with very different constraints.
-
-For edge applications, TypeScript and Cloudflare D1 are first-class targets: the domain functions
-are pure, the core has no transport coupling, and the adapter supplies the platform-specific atomic
-append. The in-memory adapter provides a zero-dependency local model, while the D1 adapter uses the
-same domain code in a Worker. A command does not need a long-lived process or a central application
-server to reconstruct an aggregate, enforce its invariant, and append a versioned event.
-
-For IoT and embedded systems, the important benefit is the portable contract rather than assuming
-that every device runs this npm package directly. A device can emit a compact command or event
-record to an edge gateway, and the gateway can use the same `fold`/`decide` model to validate and
-record it. A native or Zig implementation can implement the same contract for devices that need
-smaller binaries, predictable memory, or a C-compatible interface; the TypeScript implementation
-remains the natural choice at the edge boundary.
-
-This supports a layered topology without changing the domain model:
-
-```text
-device or local controller
-  -> command/event record
-edge gateway or Worker
-  -> fold, decide, version check, append
-durable store
-  -> optional projections and subscribers
-```
-
-Intermittent connectivity makes explicit idempotency especially valuable. A device or gateway can
-retry a command after a timeout using the same key, while the aggregate version check protects
-against a genuinely different command racing with it. The current idempotency store is intentionally
-documented as check-then-act; deployments that need concurrent duplicate claiming can add that
-stronger operation at the storage boundary.
-
-The architectural principle is the same at every tier: keep the domain decision portable, keep
-platform concerns in adapters, and make delivery or caching optional layers. That is how a small
-implementation extends quality architecture principles rather than merely shrinking an existing
-framework.
-
-### What the edge changes
-
-`tiny-cqrs` is not a new CQRS primitive. CQRS, event sourcing, aggregate-local consistency,
-optimistic concurrency, and idempotency are established techniques. The edge-oriented value is
-the execution contract that lets the same pure domain logic run against different substrates,
-including Cloudflare Durable Objects and D1.
-
-For an aggregate-local command, a Durable Object can keep the aggregate's hot state in memory and
-serialize commands for that identity. This can avoid a public network hop to a regional application
-server, avoid a database read before every decision, and partition contention by aggregate ID. The
-client still may have to travel to the Durable Object's location; edge ingress does not mean that
-state is replicated in every PoP, and this project makes no latency or throughput claim without
-deployed measurements.
-
-Raw Durable Objects are therefore the smallest and most direct choice when one aggregate identity
-is the whole problem. `tiny-cqrs` adds code and some execution overhead in exchange for a shared
-command/event/storage contract, local development, D1 support, reusable optimistic concurrency,
-and explicit completed-retry behavior. Its value is portability and consistency across substrates,
-not a demonstrated raw-Durable-Object performance win.
-
-For production decisions, measure warm and cold object latency, hydration and replay cost, storage
-write latency, throughput per aggregate, contention, and idempotency-hit latency. Use a deployed
-staging test for Cloudflare claims; local Workers emulation is behavioral evidence, not production
-network evidence.
-
-The comparative experiment and its evidence are recorded in
-[`exp/docs/experiment.md`](exp/docs/experiment.md).
-
-## Install
-
-```
-npm install tiny-cqrs
-```
-
-## Quick start
+Conceptually:
 
 ```ts
-import { executeCommand, DomainError } from 'tiny-cqrs';
-import { createMemoryAdapter } from 'tiny-cqrs/adapters/memory';
+const state = fold(events)
 
-interface CounterState { value: number }
-type Incremented = { type: 'Incremented'; amount: number };
+const result = decide(state, command)
 
-const fold = (events: readonly Incremented[]): CounterState =>
-  events.reduce((s, e) => ({ value: s.value + e.amount }), { value: 0 });
+if (!result.ok) {
+  return result
+}
 
-const decide = (state: CounterState, command: { amount: number }): Incremented[] => {
-  if (command.amount <= 0) throw new DomainError('INVALID_AMOUNT');
-  return [{ type: 'Incremented', amount: command.amount }];
-};
+const nextState = result.events.reduce(apply, state)
 
-const store = createMemoryAdapter();
+await adapter.appendEvents({
+  aggregateId,
+  expectedVersion,
+  events: result.events,
+})
 
-const result = await executeCommand({
-  store, fold, decide,
-  tenantId: 'acme', aggregateType: 'Counter', aggregateId: 'c1',
-  command: { amount: 5 },
-});
-// { ok: true, data: { events: [...], state: { value: 5 } } }
+return {
+  ok: true,
+  data: nextState,
+}
 ```
 
-Swap `createMemoryAdapter()` for `createD1Adapter(env.DB)` (`tiny-cqrs/adapters/d1`, schema in
-`schema/0001_event_store.sql`) to run the exact same domain code against Cloudflare D1 — nothing
-else changes.
+The actual implementation provides the surrounding version checks, tenant and aggregate scoping, idempotency support, and storage interaction.
 
-For idempotent retries, also pass `idempotency: createD1IdempotencyStore(env.DB)` (same module,
-schema in `schema/0002_idempotency_keys.sql`) and an `idempotencyKey` per call — see `Design` below.
+---
 
-## Design
+## Domain logic stays outside the core
 
-- **`EventEnvelope`** (`StoredEvent<E>`): `tenantId`, `aggregateType`, `aggregateId`, `version`,
-  `occurredAt` live alongside the event, not inside it — every event is tenant-scoped structurally,
-  not by convention (your domain event types never need to redeclare `tenantId` themselves).
-- **`StorageAdapter`**: two methods, `loadEvents` and `appendEvents`. `appendEvents` must throw
-  `ConcurrencyConflictError` when the aggregate has moved past `expectedVersion` — that's the whole
-  optimistic-concurrency contract. Ships with an in-memory adapter (zero dependencies) and a D1
-  adapter.
-- **`executeCommand`**: the load → fold → decide → apply → append cycle, generalized. If you pass
-  `idempotencyKey` + an `IdempotencyStore`, a retried call with the same key returns the original
-  outcome *without* re-running `decide` or touching the store — this is what makes a retry after a
-  network timeout safe instead of surfacing a spurious `CONCURRENCY_CONFLICT` for a command that
-  already succeeded. Both shipped adapters have a matching `IdempotencyStore`
-  (`createMemoryIdempotencyStore`, `createD1IdempotencyStore`). **Known limitation**: these are
-  check-then-act, not claim-then-act — they correctly de-duplicate a client retrying after the
-  first attempt has already finished, but two requests with the same key that race genuinely
-  concurrently aren't fully de-duplicated (the loser typically hits a real
-  `ConcurrencyConflictError` rather than a clean idempotent replay). A true claim step would close
-  that gap; not implemented yet.
-- **A command that creates a new aggregate** (a random ID minted before the command runs) needs
-  the idempotency check *before* that ID is generated, not just delegated to `executeCommand` —
-  otherwise a retry mints a new ID every time and idempotency never actually applies. Check the
-  store yourself first (`idempotency.get(tenantId, key)`) and only generate a new ID if it misses;
-  still pass the same `idempotencyKey`/`idempotency` into `executeCommand` so the success outcome
-  gets cached. `executeCommand` can't do this for you — it only sees the aggregate ID *after*
-  you've already chosen it.
-- **`executeCommand` is deliberately monadic.** `Outcome<T>` (`{ok:true,data}|{ok:false,code,message}`)
-  is a minimal Either, and `executeCommand`'s body is a bind/Kleisli chain: idempotency check →
-  load → decide → append, where each step either hands a value to the next or returns an `Outcome`
-  that short-circuits the rest — the same shape as `Either.chain`/`flatMap`. It's written as plain
-  sequential TypeScript rather than an actual `chain`-calling API on purpose: requiring fp-ts
-  fluency to use this library would cut against "simple enough to embed locally." No transport type
-  (no HTTP status code) anywhere in `Outcome`; map it to your framework's response type yourself.
-- **Signing** (`tiny-cqrs/signing`, optional): Ed25519 sign/verify over any payload, for anyone who
-  wants tamper-evident events. Not wired into `executeCommand` — sign what you choose to sign.
+`tiny-cqrs` does not define your domain model.
 
-## Non-goals (v1)
+You provide functions such as:
 
-Documented rather than silently missing: event schema upcasting/migration, snapshotting, async or
-queued projections. If you need these today, layer them on top — the adapter and `executeCommand`
-interfaces don't preclude it, they just don't provide it yet.
+```ts
+function fold(events: Event[]): State {
+  // domain state reconstruction
+}
 
-## Design decisions
+function decide(
+  state: State,
+  command: Command,
+): Outcome<Event[]> {
+  // domain decision
+}
+```
 
-Why this exists instead of extending [Atomik CQRS](https://github.com/mnhpub/antiatomik-cqrs)
-(this project's own predecessor) or adopting an existing TypeScript library, with the actual
-numbers behind that call: [docs/adr/decisions.md](docs/adr/decisions.md).
+These functions are ordinary TypeScript.
 
-## Contributing
+They do not depend on a database, HTTP framework, queue, or Cloudflare runtime.
 
-Bug reports, new storage adapters, and documentation fixes are welcome — see
-[CONTRIBUTING.md](CONTRIBUTING.md) for how to get set up and what's in vs. out of scope for this
-repo specifically.
+This keeps domain decisions portable across storage and deployment environments.
+
+---
+
+## Storage
+
+Storage is supplied through an adapter.
+
+The core currently defines the storage operations required to:
+
+* load an aggregate's events
+* append events against an expected version
+* report concurrency conflicts
+* optionally perform projection writes
+* optionally store completed command outcomes for idempotent retries
+
+The adapter owns the platform-specific implementation.
+
+For example:
+
+```ts
+const adapter = createD1Adapter(env.DB)
+```
+
+or:
+
+```ts
+const adapter = createMemoryAdapter()
+```
+
+The application does not need to change its domain `fold` or `decide` functions when the storage substrate changes.
+
+---
+
+## Optimistic concurrency
+
+Commands operate against an expected aggregate version.
+
+If another command has already advanced the aggregate, the append operation fails with a `ConcurrencyConflictError`.
+
+This makes concurrent writes an expected command outcome rather than an unhandled database condition.
+
+The core does not attempt to resolve competing domain decisions.
+
+The application can decide whether to retry, present an error, or take another action.
+
+---
+
+## Idempotency
+
+Idempotency can be supplied at the command boundary.
+
+```ts
+await executeCommand({
+  adapter,
+  aggregateId,
+  command,
+  idempotencyKey,
+  idempotency: createD1IdempotencyStore(env.DB),
+})
+```
+
+A completed retry can return the previously recorded outcome without running the domain decision again.
+
+The current idempotency implementation uses a check-then-act model. It is not a general-purpose distributed claim protocol.
+
+Applications that require stronger concurrent duplicate handling should provide an appropriate storage implementation.
+
+---
+
+## Tenant and aggregate scope
+
+Stored events carry the information required to identify their scope:
+
+```ts
+{
+  tenantId,
+  aggregateType,
+  aggregateId,
+  version,
+  occurredAt,
+  event
+}
+```
+
+The core uses tenant and aggregate identity as part of its storage contract.
+
+It does not define what a tenant means to the application, nor does it provide an authorization system.
+
+Authorization remains an application responsibility.
+
+---
+
+# Designed for extension
+
+`tiny-cqrs` is intentionally small, but small does not mean closed.
+
+Additional CQRS capabilities can be implemented as companion packages that depend on the core rather than being built into it.
+
+Potential companion packages include:
+
+* projections and projection checkpoints
+* snapshot stores
+* command dispatch
+* query handling
+* event publication
+* event versioning and upcasting
+* observability
+* testing utilities
+* workflow and process coordination
+* additional storage adapters
+
+For example:
+
+```text
+                 ┌─────────────────────┐
+                 │     Application      │
+                 │                     │
+                 │ product rules       │
+                 │ authorization       │
+                 │ transport           │
+                 │ workflows           │
+                 └──────────┬──────────┘
+                            │
+             ┌──────────────┴──────────────┐
+             │                             │
+     ┌───────▼────────┐           ┌────────▼────────┐
+     │   Extensions   │           │     Flavors      │
+     │                │           │                  │
+     │ projections    │           │ accounting       │
+     │ snapshots      │           │ other domains    │
+     │ observability  │           │                  │
+     │ testing        │           │                  │
+     └───────┬────────┘           └────────┬─────────┘
+             │                             │
+             └──────────────┬──────────────┘
+                            │
+                    ┌───────▼────────┐
+                    │   tiny-cqrs    │
+                    │                │
+                    │ executeCommand │
+                    │ storage        │
+                    │ concurrency    │
+                    │ idempotency    │
+                    └────────────────┘
+```
+
+The core should remain useful without these packages.
+
+An extension should not require the core to understand its transport, framework lifecycle, or deployment model.
+
+That boundary is a design goal, not a plugin API.
+
+---
+
+## Extensions versus flavors
+
+There is a useful distinction between an **extension** and a **flavor**.
+
+An extension adds infrastructure capability around the core.
+
+Examples:
+
+```text
+tiny-cqrs
+    ↓
+projection support
+```
+
+```text
+tiny-cqrs
+    ↓
+snapshot support
+```
+
+```text
+tiny-cqrs
+    ↓
+observability
+```
+
+A flavor applies the core to a particular domain.
+
+For example:
+
+```text
+tiny-cqrs
+    ↓
+ledger-kit
+    ↓
+accounting application
+```
+
+A flavor can provide domain types, invariants, helpers, and projections without requiring those concepts to become part of `tiny-cqrs`.
+
+The `*-kit` naming convention is currently informal. It is not a plugin contract, and flavor packages do not need to share a common composition interface.
+
+---
+
+## Outcomes
+
+The core returns structured outcomes rather than requiring a particular transport or framework.
+
+```ts
+type Outcome<T> =
+  | {
+      ok: true
+      data: T
+    }
+  | {
+      ok: false
+      code: string
+      message: string
+    }
+```
+
+This allows the same command execution code to be used from an HTTP handler, a worker, a test, or another application boundary.
+
+The core does not define HTTP responses, RPC envelopes, message formats, or framework-specific exceptions.
+
+---
+
+## Signing
+
+An optional signing module is available separately:
+
+```ts
+import {
+  signEvent,
+  verifyEvent,
+} from "tiny-cqrs/signing"
+```
+
+The signing module uses Ed25519.
+
+Signing is not part of the `executeCommand` cycle. Applications can use it where signed commands or events are required.
+
+---
+
+## What is not included
+
+`tiny-cqrs` does not attempt to provide:
+
+* an HTTP API
+* a command bus
+* a handler registry
+* a message broker
+* authorization
+* authentication
+* tenant policy
+* aggregate design
+* accounting rules
+* cross-aggregate transactions
+* saga orchestration
+* snapshotting
+* event schema migration
+* event upcasting
+* asynchronous projection queues
+* durable subscriber delivery
+* application-level workflow management
+
+Some of these may be appropriate for companion packages.
+
+They do not belong in the core merely because they are associated with CQRS or event sourcing.
+
+---
+
+## Portability
+
+Portability is one of the reasons for keeping the core small.
+
+The domain functions:
+
+```text
+fold(events) → state
+decide(state, command) → events
+```
+
+do not need to know whether events are stored in:
+
+* Cloudflare D1
+* Cloudflare Durable Objects
+* Node
+* an in-memory store
+* another compatible storage implementation
+
+The adapter supplies the storage-specific behaviour.
+
+This is particularly useful when the same aggregate logic needs to operate across more than one runtime or storage substrate.
+
+It is not a claim that every substrate has the same latency, throughput, consistency characteristics, or operational cost.
+
+Those properties need to be measured for the deployment in question.
+
+---
+
+## Edge runtimes
+
+`tiny-cqrs` is designed to work in constrained runtimes where a small dependency surface and limited framework assumptions are useful.
+
+Cloudflare Workers and D1 are first-class targets in the current implementation.
+
+A Durable Object can also provide aggregate-local serialization and in-memory state for workloads where that model is appropriate.
+
+`tiny-cqrs` does not make a general performance claim about edge execution.
+
+For production evaluation, measure the actual deployment:
+
+* warm latency
+* cold-start behaviour
+* event replay cost
+* storage write latency
+* aggregate throughput
+* contention
+* idempotency-hit latency
+
+Local emulation is useful for behavioural testing, but it is not a substitute for deployed measurements.
+
+---
+
+## Testing
+
+The separation between `fold`, `decide`, and the storage adapter makes the domain model straightforward to test independently.
+
+The core can also be tested against an in-memory adapter before being exercised against a production storage implementation.
+
+For migrations between implementations, the previous implementation can be retained as a characterization reference and compared with the new implementation for the same command sequences.
+
+Useful comparisons include:
+
+* accepted and rejected commands
+* resulting event sequences
+* aggregate versions
+* domain error codes
+* concurrent command behaviour
+
+These tests provide evidence about the cases they cover. They do not prove equivalence for cases that have not been tested.
+
+---
+
+## Current status
+
+`tiny-cqrs` is currently pre-1.0.
+
+The core shape around:
+
+* `executeCommand`
+* `StorageAdapter`
+* `Outcome`
+
+is established, but breaking changes remain possible while the package is in the 0.x series.
+
+The project is deliberately small enough that its implementation can be read rather than treated as an opaque framework.
+
+---
+
+## Design principles
+
+A few principles guide the project:
+
+### Keep the consistency loop small
+
+The core should focus on the aggregate command cycle and the guarantees it can actually provide.
+
+### Keep domain decisions portable
+
+`fold` and `decide` should not require a particular runtime, database, or framework.
+
+### Prefer companion packages to core expansion
+
+A capability that can depend on `tiny-cqrs` without requiring changes to the execution model should generally remain outside the core.
+
+### Keep domain-specific concerns outside the generic core
+
+Accounting, inventory, billing, legal workflows, and other domains can build on the core without becoming concepts understood by it.
+
+### Make concurrency a normal outcome
+
+Concurrent writes should have a defined result that applications can handle.
+
+### Do not hide operational trade-offs
+
+Portability does not imply identical performance or operational behaviour across storage substrates.
+
+### Keep the implementation inspectable
+
+The package should remain small enough for developers to understand what it does and what it does not do.
+
+---
+
+## Installation
+
+```bash
+npm install tiny-cqrs
+```
 
 ## License
 

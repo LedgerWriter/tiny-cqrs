@@ -343,3 +343,65 @@ future contributor proposing a generic "SQL client" storage adapter is pointed h
 - Revisit trigger: unchanged from ADR-01 — re-run the Emmett comparison if/when its storage-adapter
   layer (`dumbo`) is redesigned to treat connectionless bindings as first-class rather than fitting
   them through a connection-oriented interface, not merely when D1 support leaves beta.
+
+---
+
+## ADR-06: Make lifetime execution portability the project's governing objective
+
+**Status:** Accepted — 2026-09-07
+
+### Context
+
+CQRS and event sourcing describe established techniques, but they do not by themselves explain why
+this small library should exist. The distinctive value of `tiny-cqrs` is the boundary around the
+smallest useful consistency kernel: pure `fold`/`decide` functions, a minimal storage contract, and
+one command execution path that owns versioning, idempotency, retry, and outcome semantics.
+
+That boundary makes domain decisions portable across storage substrates and runtimes. It also points
+to a larger concern: important software is increasingly delivered as a black box whose rules,
+evidence, and execution environment are controlled by one provider. Users may be asked to trust a
+decision they cannot independently replay, verify, migrate, or contest.
+
+The project should therefore be guided by a durable architectural objective rather than by the
+category label "CQRS library." The useful analogy is to a smart contract's persistence of meaning
+across invoking clients, but without claiming blockchain properties such as consensus, gas, or
+trustless deployment.
+
+### Decision
+
+Treat lifetime execution portability as the project's governing objective:
+
+> `tiny-cqrs` makes important domain decisions portable, replayable, and independently verifiable
+> across infrastructure lifetimes.
+
+The package remains the TypeScript reference implementation of a portable execution contract:
+
+```text
+history + command + declared contract
+    -> outcome + events + resulting state
+```
+
+The public center remains `fold`/`decide`, `StorageAdapter`, `executeCommand`, the event envelope,
+`Outcome`, expected-version concurrency, and explicit idempotency semantics. The absence of a
+command bus, handler registry, dependency container, transport envelope, projection daemon, and
+plugin manager remains intentional.
+
+Future work should prioritize explicit semantics, adapter conformance tests, language-neutral test
+vectors, replay, and optional evidence features such as signing. A feature belongs in the core only
+when it makes the consistency contract more portable, explicit, replayable, verifiable, migratable,
+or stronger at the adapter boundary.
+
+### Consequences
+
+- CQRS is an implementation context, not the project's primary identity.
+- Portability includes storage and runtime migration, replay after code changes, and eventual
+  reimplementation in another language.
+- Documentation must distinguish guarantees enforced by the core from requirements placed on pure
+  domain functions and storage adapters.
+- Conformance and test vectors are higher-leverage than accumulating framework integrations or
+  storage adapters with loosely defined behavior.
+- Signing, audit evidence, and historical attestations should remain composable optional layers.
+- The project must resist becoming a full application framework, event bus, workflow engine,
+  projection platform, blockchain product, or vendor-specific deployment toolkit.
+
+The expanded rationale and roadmap live in [`docs/north-star.md`](../north-star.md).
